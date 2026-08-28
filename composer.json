@@ -5,7 +5,7 @@
     "license": "proprietary",
     "require": {
         "php": "~8.3.0",
-        "flowpack/media-ui": "^1.4",
+        "flowpack/media-ui": "^1.4 || ^2.0",
         "neos/neos": "~8.4",
         "networkteam/neos-contentapi": "^0.8.0",
         "networkteam/neos-util": "^8.1"

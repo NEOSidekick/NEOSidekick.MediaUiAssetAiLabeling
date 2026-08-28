@@ -46,7 +46,7 @@ tags.
 ## Requirements
 
 - Neos 8.4
-- Flowpack Media UI 1.4
+- Flowpack Media UI 1.4 or 2.x
 - PHP 8.3
 
 ## Installation
