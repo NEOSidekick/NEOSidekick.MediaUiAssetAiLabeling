@@ -1,0 +1,23 @@
+{
+    "name": "neosidekick/media-ui-asset-ai-labeling",
+    "description": "Labels media assets as AI-generated, AI-modified, or non-AI in Flowpack Media UI",
+    "type": "neos-package",
+    "license": "proprietary",
+    "require": {
+        "php": "~8.3.0",
+        "flowpack/media-ui": "^1.4",
+        "neos/neos": "~8.4",
+        "networkteam/neos-contentapi": "^0.8.0",
+        "networkteam/neos-util": "^8.1"
+    },
+    "autoload": {
+        "psr-4": {
+            "NEOSidekick\\MediaUiAssetAiLabeling\\": "Classes"
+        }
+    },
+    "extra": {
+        "neos": {
+            "package-key": "NEOSidekick.MediaUiAssetAiLabeling"
+        }
+    }
+}

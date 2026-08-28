@@ -1,0 +1,15 @@
+Neos:
+  Fusion:
+    defaultContext:
+      AiClassification: 'NEOSidekick\MediaUiAssetAiLabeling\Eel\AiClassificationHelper'
+  Neos:
+    fusion:
+      autoInclude:
+        NEOSidekick.MediaUiAssetAiLabeling: true
+    modules:
+      management:
+        submodules:
+          mediaui:
+            additionalResources:
+              javaScripts:
+                'NEOSidekick.MediaUiAssetAiLabeling': 'resource://NEOSidekick.MediaUiAssetAiLabeling/Public/MediaUi/ai-classification.js'
