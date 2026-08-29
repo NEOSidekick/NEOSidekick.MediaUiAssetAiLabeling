@@ -279,6 +279,34 @@
         return data.setAssetTags;
     }
 
+    function updateSegmentedControl(control, state, disabled) {
+        control.dataset.value = state;
+        control.querySelectorAll('button').forEach((button) => {
+            const selected = button.dataset.value === state;
+            button.disabled = disabled;
+            button.setAttribute('aria-checked', String(selected));
+            button.tabIndex = selected ? 0 : -1;
+            button.style.background = selected ? '#00adee' : '#323232';
+            button.style.borderColor = selected ? '#00adee' : '#3f3f3f';
+            button.style.color = '#fff';
+            button.style.cursor = disabled ? 'not-allowed' : 'pointer';
+            button.style.opacity = disabled ? '0.65' : '1';
+        });
+    }
+
+    function placeControl(anchor, control) {
+        if (anchor.matches('.tagSelectBoxWrapper')) {
+            if (anchor.nextElementSibling !== control) {
+                anchor.insertAdjacentElement('afterend', control);
+            }
+            return;
+        }
+
+        if (control.parentElement !== anchor) {
+            anchor.append(control);
+        }
+    }
+
     function createControl(anchor, identity, state) {
         const uiText = localizedText();
         const container = document.createElement('div');
@@ -286,63 +314,105 @@
         container.dataset.assetId = identity.assetId;
         container.style.marginBottom = '16px';
 
-        const label = document.createElement('label');
-        label.htmlFor = `${CONTROL_ID}-select`;
+        const label = document.createElement('div');
+        label.id = `${CONTROL_ID}-label`;
         label.textContent = uiText.label;
         label.style.display = 'block';
         label.style.marginBottom = '8px';
         label.style.fontWeight = 'bold';
 
-        const select = document.createElement('select');
-        select.id = `${CONTROL_ID}-select`;
-        select.style.width = '100%';
-        select.style.height = '40px';
-        select.style.padding = '0 12px';
-        select.style.border = '1px solid #3f3f3f';
-        select.style.background = '#323232';
-        select.style.color = '#fff';
-        select.innerHTML = `
-            <option value="none">${uiText.none}</option>
-            <option value="generated">${uiText.generated}</option>
-            <option value="modified">${uiText.modified}</option>
-        `;
-        select.value = state;
-        select.disabled = mutationInFlight || identity.readOnly;
+        const segmentedControl = document.createElement('div');
+        segmentedControl.id = `${CONTROL_ID}-segments`;
+        segmentedControl.setAttribute('role', 'radiogroup');
+        segmentedControl.setAttribute('aria-labelledby', label.id);
+        segmentedControl.style.display = 'flex';
+        segmentedControl.style.width = '100%';
 
-        select.addEventListener('change', async () => {
-            if (mutationInFlight) {
+        const options = [
+            ['none', uiText.none],
+            ['generated', uiText.generated],
+            ['modified', uiText.modified],
+        ];
+
+        options.forEach(([value, text], index) => {
+            const button = document.createElement('button');
+            button.type = 'button';
+            button.dataset.value = value;
+            button.setAttribute('role', 'radio');
+            button.textContent = text;
+            button.style.flex = '1 1 0';
+            button.style.minWidth = '0';
+            button.style.height = '40px';
+            button.style.padding = '0 8px';
+            button.style.border = '1px solid #3f3f3f';
+            button.style.borderLeftWidth = index === 0 ? '1px' : '0';
+            button.style.borderRadius = index === 0
+                ? '2px 0 0 2px'
+                : index === options.length - 1
+                  ? '0 2px 2px 0'
+                  : '0';
+            button.style.font = 'inherit';
+            button.style.fontSize = '13px';
+            button.style.whiteSpace = 'nowrap';
+            segmentedControl.append(button);
+        });
+
+        updateSegmentedControl(segmentedControl, state, mutationInFlight || identity.readOnly);
+
+        const selectValue = async (value) => {
+            const previousValue = currentAiState(knownAssets.get(identity.assetId)?.tags || []);
+            if (mutationInFlight || value === previousValue) {
                 return;
             }
 
-            const previousValue = currentAiState(knownAssets.get(identity.assetId)?.tags || []);
             mutationInFlight = true;
-            select.disabled = true;
+            updateSegmentedControl(segmentedControl, value, true);
             container.removeAttribute('data-error');
 
             try {
-                const asset = await applySelection(identity, select.value);
-                select.value = currentAiState(asset.tags);
+                const asset = await applySelection(identity, value);
+                updateSegmentedControl(segmentedControl, currentAiState(asset.tags), identity.readOnly);
             } catch (error) {
-                select.value = previousValue;
+                updateSegmentedControl(segmentedControl, previousValue, identity.readOnly);
                 container.dataset.error = 'true';
                 container.title = `${uiText.saveError}: ${error.message}`;
                 console.error(`${uiText.saveError}.`, error);
             } finally {
                 mutationInFlight = false;
-                if (select.isConnected) {
-                    select.disabled = identity.readOnly;
+                if (segmentedControl.isConnected) {
+                    updateSegmentedControl(segmentedControl, segmentedControl.dataset.value, identity.readOnly);
                 }
                 renderControl();
             }
+        };
+
+        segmentedControl.addEventListener('click', ({ target }) => {
+            const button = target.closest('button');
+            if (button && !button.disabled) {
+                selectValue(button.dataset.value);
+            }
         });
 
-        container.append(label, select);
-        if (anchor.matches('.tagSelectBoxWrapper')) {
-            anchor.insertAdjacentElement('afterend', container);
-        } else {
-            anchor.append(container);
-        }
-        return select;
+        segmentedControl.addEventListener('keydown', (event) => {
+            if (!['ArrowLeft', 'ArrowRight', 'Home', 'End'].includes(event.key)) {
+                return;
+            }
+
+            event.preventDefault();
+            const buttons = Array.from(segmentedControl.querySelectorAll('button'));
+            const currentIndex = buttons.indexOf(event.target);
+            const nextIndex = event.key === 'Home'
+                ? 0
+                : event.key === 'End'
+                  ? buttons.length - 1
+                  : (currentIndex + (event.key === 'ArrowRight' ? 1 : -1) + buttons.length) % buttons.length;
+            buttons[nextIndex].focus();
+            buttons[nextIndex].click();
+        });
+
+        container.append(label, segmentedControl);
+        placeControl(anchor, container);
+        return segmentedControl;
     }
 
     async function renderControl() {
@@ -356,25 +426,39 @@
         }
 
         if (existingControl?.dataset.assetId === identity.assetId) {
-            const existingSelect = existingControl.querySelector('select');
-            existingSelect.disabled = mutationInFlight || identity.readOnly;
+            placeControl(anchor, existingControl);
+            const existingSegmentedControl = existingControl.querySelector('[role="radiogroup"]');
             if (!mutationInFlight && identity.tags) {
-                existingSelect.value = currentAiState(identity.tags);
+                updateSegmentedControl(
+                    existingSegmentedControl,
+                    currentAiState(identity.tags),
+                    identity.readOnly
+                );
+            } else {
+                updateSegmentedControl(
+                    existingSegmentedControl,
+                    existingSegmentedControl.dataset.value,
+                    mutationInFlight || identity.readOnly
+                );
             }
             return;
         }
 
         existingControl?.remove();
-        const select = createControl(anchor, identity, currentAiState(identity.tags || []));
+        const segmentedControl = createControl(anchor, identity, currentAiState(identity.tags || []));
 
         try {
             const asset = await fetchAsset(identity);
             const currentAnchor = findAnchor();
-            if (select.isConnected && selectedAssetId(currentAnchor) === identity.assetId && !mutationInFlight) {
-                select.value = currentAiState(asset.tags);
+            if (
+                segmentedControl.isConnected &&
+                selectedAssetId(currentAnchor) === identity.assetId &&
+                !mutationInFlight
+            ) {
+                updateSegmentedControl(segmentedControl, currentAiState(asset.tags), identity.readOnly);
             }
         } catch (error) {
-            select.closest(`#${CONTROL_ID}`)?.remove();
+            segmentedControl.closest(`#${CONTROL_ID}`)?.remove();
             console.warn(localizedText().unavailable, error);
         }
     }
