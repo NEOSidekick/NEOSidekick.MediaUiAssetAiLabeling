@@ -14,7 +14,7 @@ Neos Media tags:
 
 | Option         | Assigned tags       |
 | -------------- | ------------------- |
-| `Non-AI`       | Neither AI tag      |
+| `Without AI`   | Neither AI tag      |
 | `AI-generated` | `AI-generated` only |
 | `AI-modified`  | `AI-modified` only  |
 

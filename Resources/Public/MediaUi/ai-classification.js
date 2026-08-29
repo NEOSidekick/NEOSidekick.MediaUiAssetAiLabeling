@@ -9,7 +9,7 @@
     const TRANSLATIONS = {
         de: {
             label: 'KI-Klassifizierung',
-            none: 'Nicht KI-generiert',
+            none: 'Ohne KI',
             generated: 'KI-generiert',
             modified: 'KI-bearbeitet',
             saveError: 'KI-Klassifizierung konnte nicht gespeichert werden',
@@ -17,7 +17,7 @@
         },
         en: {
             label: 'AI classification',
-            none: 'Non-AI',
+            none: 'Without AI',
             generated: 'AI-generated',
             modified: 'AI-modified',
             saveError: 'AI classification could not be saved',
