@@ -6,9 +6,10 @@
     "require": {
         "php": "~8.3.0",
         "flowpack/media-ui": "^1.4 || ^2.0",
-        "neos/neos": "~8.4",
-        "networkteam/neos-contentapi": "^0.8.0",
-        "networkteam/neos-util": "^8.1"
+        "neos/neos": "~8.4"
+    },
+    "suggest": {
+        "sitegeist/kaleidoscope": "Adds aiClassification() to Kaleidoscope image sources for Fusion rendering"
     },
     "autoload": {
         "psr-4": {

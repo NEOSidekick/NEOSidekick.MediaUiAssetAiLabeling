@@ -3,9 +3,6 @@ Neos:
     defaultContext:
       AiClassification: 'NEOSidekick\MediaUiAssetAiLabeling\Eel\AiClassificationHelper'
   Neos:
-    fusion:
-      autoInclude:
-        NEOSidekick.MediaUiAssetAiLabeling: true
     modules:
       management:
         submodules:

@@ -1,12 +1,11 @@
 # Media UI Asset AI Labeling
 
-> **Beta:** This package is under active development. Its behavior and public
-> integration points may still change before the first stable release.
+> **Beta:** This package is under active development.
 
 Adds an exclusive AI classification selector to the asset inspector in
 [flowpack/media-ui](https://github.com/Flowpack/media-ui).
 
-![AI classification selector](Documentation/Images/media-ui-ai-classification.jpg)
+![AI classification selector](Documentation/Images/media-ui-ai-classification.png)
 
 ## Behaviour
 
@@ -31,17 +30,80 @@ language-independent.
 The integration is loaded only in the Media UI module. It does not affect the
 asset selector used by the Neos content module.
 
-## Content API integration
+## Fusion EEL helpers
 
-Every image rendered through `Networkteam.Neos.Util:ImageUriAndDimensions` and
-every generic asset serialized by `Networkteam.Neos.ContentApi:Properties`
-contains an additional `aiClassification` field. Its value is either
-`AI-generated`, `AI-modified`, or `null`. Image variants inherit the
-classification of their original image, while generic assets include videos.
+The package registers `AiClassification` in the default Fusion context. Use it
+with a single image, image variant, video, or other Neos media asset:
 
-The field is intentionally based on the stable tag labels, so frontend
-integrations can map it to localized display text without exposing all media
-tags.
+```fusion
+aiClassification = ${AiClassification.fromAsset(asset)}
+```
+
+For responsive video sources or other asset collections, use:
+
+```fusion
+aiClassification = ${AiClassification.fromAssets(assets)}
+```
+
+Both methods return `AI-generated`, `AI-modified`, or `null`. Image variants
+inherit their original asset's classification. If a collection contains both
+classifications, `AI-generated` takes precedence.
+
+When Sitegeist Kaleidoscope is installed, its image sources also expose the
+classification directly:
+
+```fusion
+aiClassification = ${imageSource.aiClassification()}
+```
+
+Asset-backed image sources resolve their original Neos media asset. Dummy,
+resource, and URI image sources return `null`.
+
+### Rendering an image with Schema.org microdata
+
+This complete Fusion example renders a Neos image and discloses its digital
+source when it is AI-classified:
+
+```fusion
+prototype(Vendor.Site:AiClassifiedImage) < prototype(Neos.Fusion:Component) {
+    asset = null
+    alternativeText = ''
+
+    @private {
+        aiClassification = ${AiClassification.fromAsset(props.asset)}
+        digitalSourceType = ${AiClassification.schemaOrgDigitalSourceType(private.aiClassification)}
+    }
+
+    renderer = afx`
+        <figure itemscope="" itemtype="https://schema.org/ImageObject">
+            <Neos.Neos:ImageTag
+                asset={props.asset}
+                attributes.alt={props.alternativeText}
+                attributes.itemprop="contentUrl"
+            />
+            <meta
+                @if.has={private.digitalSourceType}
+                itemprop="digitalSourceType"
+                content={private.digitalSourceType}
+            />
+        </figure>
+    `
+}
+```
+
+`schemaOrgDigitalSourceType()` also accepts an asset or asset collection
+directly when the classification value is not otherwise needed.
+
+## Zebra and Content API integration
+
+If the website uses Zebra, add the optional
+`neosidekick/content-api-asset-ai-labeling` package. It adds the classification
+to `Networkteam.Neos.ContentApi` output while keeping the Media UI package free
+of Content API dependencies:
+
+```bash
+composer require neosidekick/content-api-asset-ai-labeling
+```
 
 ## Requirements
 
@@ -64,8 +126,9 @@ require it from the site or root package as usual.
 ## Implementation notes
 
 The package registers one JavaScript resource through
-`additionalResources.javaScripts`. The script uses the existing Media UI
-GraphQL endpoint and Apollo cache, so no fork or frontend build is required.
+`additionalResources.javaScripts` and one EEL helper in the default Fusion
+context. The script uses the existing Media UI GraphQL endpoint and Apollo
+cache, so no fork or frontend build is required.
 
 The classification tag labels are part of the data contract. If either tag is
 renamed or deleted, the package recreates the expected label on the next
