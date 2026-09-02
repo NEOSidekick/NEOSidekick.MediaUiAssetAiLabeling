@@ -27,8 +27,11 @@ German (`de`, `de_AT`, or `de-DE`) uses German labels, while English and all
 other languages use the English fallback. The persisted tag labels remain
 language-independent.
 
-The integration is loaded only in the Media UI module. It does not affect the
-asset selector used by the Neos content module.
+The integration is loaded in the Media UI module and in the Neos UI content
+module, where the same selector appears in the asset details screen that the
+inspector image and asset editors open when Flowpack Media UI's
+`useNewMediaSelection` feature is enabled. The legacy Neos asset selector is
+not affected.
 
 ## Fusion EEL helpers
 
@@ -125,10 +128,15 @@ require it from the site or root package as usual.
 
 ## Implementation notes
 
-The package registers one JavaScript resource through
-`additionalResources.javaScripts` and one EEL helper in the default Fusion
-context. The script uses the existing Media UI GraphQL endpoint and Apollo
-cache, so no fork or frontend build is required.
+The package registers the same JavaScript resource twice, once for the Media
+module through `additionalResources.javaScripts` and once for the Neos UI
+through `Neos.Neos.Ui.resources.javascript`, plus one EEL helper in the default
+Fusion context. The script uses the existing Media UI GraphQL endpoint and
+Apollo cache, so no fork or frontend build is required. In both host pages it
+installs a `window.fetch` interceptor for the `/neos/graphql/media-assets`
+endpoint to keep the selected asset and its tags up to date without extra
+queries. The control only renders for assets whose identifier is a UUID, which
+means external asset sources are not supported.
 
 The classification tag labels are part of the data contract. If either tag is
 renamed or deleted, the package recreates the expected label on the next

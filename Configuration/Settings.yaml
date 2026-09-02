@@ -10,3 +10,11 @@ Neos:
             additionalResources:
               javaScripts:
                 'NEOSidekick.MediaUiAssetAiLabeling': 'resource://NEOSidekick.MediaUiAssetAiLabeling/Public/MediaUi/ai-classification.js'
+
+    Ui:
+      resources:
+        javascript:
+          'NEOSidekick.MediaUiAssetAiLabeling:AiClassification':
+            resource: 'resource://NEOSidekick.MediaUiAssetAiLabeling/Public/MediaUi/ai-classification.js'
+            attributes:
+              defer: true
