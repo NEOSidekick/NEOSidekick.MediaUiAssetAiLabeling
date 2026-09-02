@@ -225,18 +225,46 @@
         };
     }
 
-    async function resolveTagId(label) {
-        const { tags } = await gql('query NEOSidekickAiTags { tags { id label } }', {});
+    // Media UI 2.x scopes tags to an asset source (`tags(assetSourceId:)`, `createTag(assetSourceId:)`),
+    // Media UI 1.4 does not know that argument. The schema is introspected once per page load.
+    let tagQueriesUseAssetSource = null;
+
+    async function tagQueriesRequireAssetSource() {
+        if (tagQueriesUseAssetSource === null) {
+            const data = await gql(
+                'query NEOSidekickAiTagSchema { __type(name: "Query") { fields { name args { name } } } }',
+                {}
+            );
+            const tagsField = data.__type?.fields?.find((field) => field.name === 'tags');
+            tagQueriesUseAssetSource = Boolean(tagsField?.args?.some((argument) => argument.name === 'assetSourceId'));
+        }
+
+        return tagQueriesUseAssetSource;
+    }
+
+    async function resolveTagId(label, assetSourceId) {
+        const scopedToAssetSource = await tagQueriesRequireAssetSource();
+        const { tags } = scopedToAssetSource
+            ? await gql(
+                  'query NEOSidekickAiTags($assetSourceId: AssetSourceId!) { tags(assetSourceId: $assetSourceId) { id label } }',
+                  { assetSourceId }
+              )
+            : await gql('query NEOSidekickAiTags { tags { id label } }', {});
         const existingTag = tags.find((tag) => tag.label === label);
 
         if (existingTag) {
             return existingTag.id;
         }
 
-        const data = await gql(
-            'mutation NEOSidekickAiCreateTag($label: TagLabel!) { createTag(label: $label) { id label } }',
-            { label }
-        );
+        const data = scopedToAssetSource
+            ? await gql(
+                  'mutation NEOSidekickAiCreateTag($label: TagLabel!, $assetSourceId: AssetSourceId!) { createTag(label: $label, assetSourceId: $assetSourceId) { id label } }',
+                  { label, assetSourceId }
+              )
+            : await gql(
+                  'mutation NEOSidekickAiCreateTag($label: TagLabel!) { createTag(label: $label) { id label } }',
+                  { label }
+              );
         return data.createTag.id;
     }
 
@@ -400,7 +428,7 @@
             .map(({ id }) => id);
 
         if (value !== 'none') {
-            nextTagIds.push(await resolveTagId(value === 'generated' ? TAG_GENERATED : TAG_MODIFIED));
+            nextTagIds.push(await resolveTagId(value === 'generated' ? TAG_GENERATED : TAG_MODIFIED, identity.assetSourceId));
         }
 
         const data = await gql(
