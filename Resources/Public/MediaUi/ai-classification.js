@@ -1,11 +1,24 @@
 (function () {
     'use strict';
 
+    // The script is registered for the Media module and for the Neos UI, which can load both on one page
+    if (window.__NEOSIDEKICK_AI_CLASSIFICATION__) {
+        return;
+    }
+    window.__NEOSIDEKICK_AI_CLASSIFICATION__ = true;
+
     const TAG_GENERATED = 'AI-generated';
     const TAG_MODIFIED = 'AI-modified';
     const ENDPOINT = '/neos/graphql/media-assets';
     const CONTROL_ID = 'neosidekick-ai-classification';
-    const APP_SELECTOR = '#media-ui-app';
+    // Media module app root, or the Neos UI app root when the asset inspector opens the Media UI screens
+    const APP_SELECTORS = ['#media-ui-app', '#appContainer'];
+    // The Neos UI page lives for hours, so the caches below are bounded
+    const MAX_KNOWN_ASSETS = 500;
+    const FETCH_FAILURE_COOLDOWN = 10000;
+    const COLOR_SELECTED = 'var(--theme-colors-PrimaryBlue, #00adee)';
+    const COLOR_BACKGROUND = 'var(--theme-colors-ContrastDarker, #323232)';
+    const COLOR_BORDER = 'var(--theme-colors-ContrastNeutral, #3f3f3f)';
     const TRANSLATIONS = {
         de: {
             label: 'KI-Klassifizierung',
@@ -25,20 +38,101 @@
         },
     };
     const knownAssets = new Map();
+    // Asset ids whose detail query failed, with the timestamp of the failure
+    const fetchFailures = new Map();
+    // Every Apollo client discovered so far; the Media UI plugin keeps one per screen
+    const apolloClients = new Set();
     let mutationInFlight = false;
+    let interfaceLanguageValue = null;
+    let fetchInterceptorInstalled = false;
 
+    // The Neos UI consumes and removes its _NEOS_UI_* globals during bootstrap, so the
+    // translation endpoint (which carries the interface locale) is read from the inline script tag.
+    function neosUiTranslationUrl() {
+        const configurationScript = Array.from(document.scripts).find((script) =>
+            script.textContent.trimStart().startsWith('_NEOS_UI_configuration')
+        );
+        const match = configurationScript?.textContent.match(/"translations":"((?:\\.|[^"\\])*)"/);
+        if (!match) {
+            return null;
+        }
+
+        try {
+            // The captured group is still a JSON string body, so JSON parsing resolves all escapes
+            return JSON.parse('"' + match[1] + '"');
+        } catch {
+            return null;
+        }
+    }
+
+    // The interface language never changes without a page reload, so it is resolved once
     function interfaceLanguage() {
-        const translationUrl = document.querySelector('link[rel="neos-xliff"]')?.href;
+        if (interfaceLanguageValue) {
+            return interfaceLanguageValue;
+        }
+
+        const translationUrl = document.querySelector('link[rel="neos-xliff"]')?.href || neosUiTranslationUrl();
         if (!translationUrl) {
-            return 'en';
+            interfaceLanguageValue = 'en';
+            return interfaceLanguageValue;
         }
 
         try {
             const locale = new URL(translationUrl, window.location.href).searchParams.get('locale');
-            return locale?.split(/[-_]/)[0] || 'en';
+            interfaceLanguageValue = locale?.split(/[-_]/)[0] || 'en';
         } catch {
-            return 'en';
+            interfaceLanguageValue = 'en';
         }
+
+        return interfaceLanguageValue;
+    }
+
+    function findApp() {
+        return APP_SELECTORS.map((selector) => document.querySelector(selector)).find(Boolean) || null;
+    }
+
+    function isApolloClient(candidate) {
+        return Boolean(candidate && typeof candidate.mutate === 'function' && candidate.cache);
+    }
+
+    // The Neos UI plugin bundle does not expose window.__APOLLO_CLIENT__, so the client
+    // is taken from the ApolloProvider props in the React tree above the anchor element.
+    function apolloClientFromReactTree(element) {
+        // React 17+ stores the fiber as __reactFiber$, React 16 (Neos UI 8) as __reactInternalInstance$
+        const fiberKey = element
+            ? Object.keys(element).find(
+                  (key) => key.startsWith('__reactFiber$') || key.startsWith('__reactInternalInstance$')
+              )
+            : null;
+        let fiber = fiberKey ? element[fiberKey] : null;
+
+        while (fiber) {
+            const props = fiber.memoizedProps;
+            if (isApolloClient(props?.client)) {
+                return props.client;
+            }
+            if (isApolloClient(props?.value?.client)) {
+                return props.value.client;
+            }
+            fiber = fiber.return;
+        }
+
+        return null;
+    }
+
+    function apolloClient(anchor) {
+        const globalClient = isApolloClient(window.__APOLLO_CLIENT__) ? window.__APOLLO_CLIENT__ : null;
+        if (globalClient) {
+            apolloClients.add(globalClient);
+        }
+
+        const client = globalClient || apolloClientFromReactTree(anchor);
+        if (client) {
+            // The details and selection screens use separate clients, so all of them are remembered
+            apolloClients.add(client);
+        }
+
+        return client;
     }
 
     function localizedText() {
@@ -66,12 +160,18 @@
             return;
         }
 
+        // Deleting first moves a re-inserted asset to the end, so eviction drops the least recently seen one
+        knownAssets.delete(asset.id);
         knownAssets.set(asset.id, {
             assetId: asset.id,
             assetSourceId: asset.assetSource.id,
             readOnly: Boolean(asset.assetSource.readOnly),
             tags: asset.tags || [],
         });
+
+        if (knownAssets.size > MAX_KNOWN_ASSETS) {
+            knownAssets.delete(knownAssets.keys().next().value);
+        }
     }
 
     function rememberGraphQlData(value) {
@@ -83,21 +183,47 @@
         }
     }
 
-    const originalFetch = window.fetch.bind(window);
-    window.fetch = async (...args) => {
-        const response = await originalFetch(...args);
-        const url = typeof args[0] === 'string' ? args[0] : args[0]?.url;
-
-        if (url?.includes(ENDPOINT)) {
-            response
-                .clone()
-                .json()
-                .then(({ data }) => rememberGraphQlData(data))
-                .catch(() => {});
+    // fetch accepts a string, a Request, a URL, or anything stringifiable
+    function requestUrl(input) {
+        if (typeof input === 'string') {
+            return input;
+        }
+        if (typeof Request !== 'undefined' && input instanceof Request) {
+            return input.url;
+        }
+        if (typeof URL !== 'undefined' && input instanceof URL) {
+            return input.href;
         }
 
-        return response;
-    };
+        return String(input ?? '');
+    }
+
+    // Reads every Media UI GraphQL response so asset identities stay current without extra queries
+    function installFetchInterceptor() {
+        if (fetchInterceptorInstalled) {
+            return;
+        }
+        fetchInterceptorInstalled = true;
+
+        const originalFetch = window.fetch.bind(window);
+        window.fetch = async (...args) => {
+            const response = await originalFetch(...args);
+
+            try {
+                if (requestUrl(args[0]).includes(ENDPOINT)) {
+                    response
+                        .clone()
+                        .json()
+                        .then(({ data }) => rememberGraphQlData(data))
+                        .catch(() => {});
+                }
+            } catch {
+                // Bookkeeping must never break the request of the calling code
+            }
+
+            return response;
+        };
+    }
 
     async function resolveTagId(label) {
         const { tags } = await gql('query NEOSidekickAiTags { tags { id label } }', {});
@@ -115,13 +241,24 @@
     }
 
     function findAnchor() {
-        const app = document.querySelector(APP_SELECTOR);
-        const tagField = app?.querySelector('.tagSelectBoxWrapper');
+        const app = findApp();
+        if (!app) {
+            return null;
+        }
+
+        const tagFields = Array.from(app.querySelectorAll('.tagSelectBoxWrapper'));
+        // Several media screens can stay mounted at once, the visible one is the last rendered
+        const tagField = tagFields.filter((element) => element.offsetParent !== null).pop() || tagFields.pop();
         if (tagField) {
             return tagField;
         }
 
-        const identifier = Array.from(app?.querySelectorAll('dd') || []).find((element) =>
+        // Only the standalone Media module renders the inspector definition list this fallback relies on
+        if (app.id !== 'media-ui-app') {
+            return null;
+        }
+
+        const identifier = Array.from(app.querySelectorAll('dd')).find((element) =>
             /^[0-9a-f]{8}-[0-9a-f]{4}-[1-5][0-9a-f]{3}-[89ab][0-9a-f]{3}-[0-9a-f]{12}$/i.test(
                 element.textContent.trim()
             )
@@ -142,14 +279,19 @@
         return identifier?.textContent.trim() || null;
     }
 
-    function identityFromApolloCache(assetId) {
-        const client = window.__APOLLO_CLIENT__;
-        if (!assetId || !client?.cache?.extract) {
+    function identityFromApolloCache(client, assetId) {
+        if (!assetId || !client?.cache?.extract || typeof client.cache.identify !== 'function') {
+            return null;
+        }
+
+        // Media UI keys Asset entries by id, so the entry can be addressed directly
+        const cacheId = client.cache.identify({ __typename: 'Asset', id: assetId });
+        if (!cacheId) {
             return null;
         }
 
         const cache = client.cache.extract();
-        const asset = Object.values(cache).find((entry) => entry?.__typename === 'Asset' && entry.id === assetId);
+        const asset = cache[cacheId];
         const sourceReference = asset?.assetSource?.__ref;
         const assetSource = sourceReference ? cache[sourceReference] : asset?.assetSource;
         const assetSourceId = assetSource?.id;
@@ -169,9 +311,8 @@
         return knownAssets.get(assetId);
     }
 
-    function currentAssetIdentity(anchor) {
-        const assetId = selectedAssetId(anchor);
-        return identityFromApolloCache(assetId) || knownAssets.get(assetId) || null;
+    function currentAssetIdentity(client, assetId) {
+        return identityFromApolloCache(client, assetId) || knownAssets.get(assetId) || null;
     }
 
     function currentAiState(tags) {
@@ -199,8 +340,8 @@
         return data.asset;
     }
 
-    function updateApolloCache(asset) {
-        const cache = window.__APOLLO_CLIENT__?.cache;
+    function updateApolloCache(client, asset) {
+        const cache = client?.cache;
         if (!cache?.identify || !cache?.modify) {
             return;
         }
@@ -227,8 +368,8 @@
         });
     }
 
-    async function refetchActiveAssetQueries() {
-        const queries = window.__APOLLO_CLIENT__?.queryManager?.queries;
+    async function refetchActiveAssetQueries(client) {
+        const queries = client?.queryManager?.queries;
         if (!queries?.forEach) {
             return;
         }
@@ -252,7 +393,7 @@
         await Promise.allSettled(refetches);
     }
 
-    async function applySelection(identity, value) {
+    async function applySelection(client, identity, value) {
         const asset = await fetchAsset(identity);
         const nextTagIds = asset.tags
             .filter(({ label }) => label !== TAG_GENERATED && label !== TAG_MODIFIED)
@@ -273,8 +414,14 @@
             { id: identity.assetId, assetSourceId: identity.assetSourceId, tagIds: nextTagIds }
         );
         rememberAsset(data.setAssetTags);
-        updateApolloCache(data.setAssetTags);
-        await refetchActiveAssetQueries();
+
+        // Every screen keeps its own client and cache, so all of them have to see the new tags
+        const clients = new Set(apolloClients);
+        if (client) {
+            clients.add(client);
+        }
+        clients.forEach((candidate) => updateApolloCache(candidate, data.setAssetTags));
+        await Promise.allSettled(Array.from(clients).map((candidate) => refetchActiveAssetQueries(candidate)));
 
         return data.setAssetTags;
     }
@@ -286,8 +433,8 @@
             button.disabled = disabled;
             button.setAttribute('aria-checked', String(selected));
             button.tabIndex = selected ? 0 : -1;
-            button.style.background = selected ? '#00adee' : '#323232';
-            button.style.borderColor = selected ? '#00adee' : '#3f3f3f';
+            button.style.background = selected ? COLOR_SELECTED : COLOR_BACKGROUND;
+            button.style.borderColor = selected ? COLOR_SELECTED : COLOR_BORDER;
             button.style.color = '#fff';
             button.style.cursor = disabled ? 'not-allowed' : 'pointer';
             button.style.opacity = disabled ? '0.65' : '1';
@@ -307,7 +454,7 @@
         }
     }
 
-    function createControl(anchor, identity, state) {
+    function createControl(anchor, client, identity, state) {
         const uiText = localizedText();
         const container = document.createElement('div');
         container.id = CONTROL_ID;
@@ -328,6 +475,15 @@
         segmentedControl.style.display = 'flex';
         segmentedControl.style.width = '100%';
 
+        // Save errors are only visible as a tooltip otherwise, which screen readers do not announce
+        const status = document.createElement('div');
+        status.id = `${CONTROL_ID}-status`;
+        status.setAttribute('role', 'status');
+        status.setAttribute('aria-live', 'polite');
+        status.style.marginTop = '4px';
+        status.style.fontSize = '12px';
+        status.style.color = '#ff8700';
+
         const options = [
             ['none', uiText.none],
             ['generated', uiText.generated],
@@ -344,7 +500,7 @@
             button.style.minWidth = '0';
             button.style.height = '40px';
             button.style.padding = '0 8px';
-            button.style.border = '1px solid #3f3f3f';
+            button.style.border = `1px solid ${COLOR_BORDER}`;
             button.style.borderLeftWidth = index === 0 ? '1px' : '0';
             button.style.borderRadius = index === 0
                 ? '2px 0 0 2px'
@@ -359,6 +515,12 @@
 
         updateSegmentedControl(segmentedControl, state, mutationInFlight || identity.readOnly);
 
+        const resetError = () => {
+            container.removeAttribute('data-error');
+            container.removeAttribute('title');
+            status.textContent = '';
+        };
+
         const selectValue = async (value) => {
             const previousValue = currentAiState(knownAssets.get(identity.assetId)?.tags || []);
             if (mutationInFlight || value === previousValue) {
@@ -367,22 +529,24 @@
 
             mutationInFlight = true;
             updateSegmentedControl(segmentedControl, value, true);
-            container.removeAttribute('data-error');
+            resetError();
 
             try {
-                const asset = await applySelection(identity, value);
+                const asset = await applySelection(client, identity, value);
+                resetError();
                 updateSegmentedControl(segmentedControl, currentAiState(asset.tags), identity.readOnly);
             } catch (error) {
                 updateSegmentedControl(segmentedControl, previousValue, identity.readOnly);
                 container.dataset.error = 'true';
                 container.title = `${uiText.saveError}: ${error.message}`;
+                status.textContent = uiText.saveError;
                 console.error(`${uiText.saveError}.`, error);
             } finally {
                 mutationInFlight = false;
                 if (segmentedControl.isConnected) {
                     updateSegmentedControl(segmentedControl, segmentedControl.dataset.value, identity.readOnly);
                 }
-                renderControl();
+                renderControlSafely();
             }
         };
 
@@ -398,9 +562,14 @@
                 return;
             }
 
-            event.preventDefault();
             const buttons = Array.from(segmentedControl.querySelectorAll('button'));
-            const currentIndex = buttons.indexOf(event.target);
+            if (buttons.length === 0 || buttons.some((button) => button.disabled)) {
+                return;
+            }
+
+            event.preventDefault();
+            // The event target is not necessarily one of the buttons, then navigation starts at the first
+            const currentIndex = Math.max(buttons.indexOf(event.target), 0);
             const nextIndex = event.key === 'Home'
                 ? 0
                 : event.key === 'End'
@@ -410,17 +579,29 @@
             buttons[nextIndex].click();
         });
 
-        container.append(label, segmentedControl);
+        container.append(label, segmentedControl, status);
         placeControl(anchor, container);
         return segmentedControl;
     }
 
     async function renderControl() {
         const anchor = findAnchor();
-        const identity = anchor ? currentAssetIdentity(anchor) : null;
-        const existingControl = document.getElementById(CONTROL_ID);
+        if (anchor) {
+            // The interceptor has to be in place before the first asset query is sent
+            installFetchInterceptor();
+        }
 
-        if (!window.__APOLLO_CLIENT__ || !anchor || !identity) {
+        const client = anchor ? apolloClient(anchor) : null;
+        const assetId = anchor ? selectedAssetId(anchor) : null;
+        const existingControl = document.getElementById(CONTROL_ID);
+        // While the same asset stays selected the remembered identity is current, so the cache is not re-read
+        const remembered =
+            assetId && !mutationInFlight && existingControl?.dataset.assetId === assetId
+                ? knownAssets.get(assetId)
+                : null;
+        const identity = client && assetId ? remembered || currentAssetIdentity(client, assetId) : null;
+
+        if (!client || !anchor || !identity) {
             existingControl?.remove();
             return;
         }
@@ -428,10 +609,15 @@
         if (existingControl?.dataset.assetId === identity.assetId) {
             placeControl(anchor, existingControl);
             const existingSegmentedControl = existingControl.querySelector('[role="radiogroup"]');
-            if (!mutationInFlight && identity.tags) {
+            if (!existingSegmentedControl) {
+                existingControl.remove();
+                return;
+            }
+
+            if (!mutationInFlight) {
                 updateSegmentedControl(
                     existingSegmentedControl,
-                    currentAiState(identity.tags),
+                    currentAiState(identity.tags || []),
                     identity.readOnly
                 );
             } else {
@@ -445,7 +631,15 @@
         }
 
         existingControl?.remove();
-        const segmentedControl = createControl(anchor, identity, currentAiState(identity.tags || []));
+
+        // A failing asset query would otherwise be retried on every mutation of the inspector
+        const failedAt = fetchFailures.get(identity.assetId);
+        if (failedAt && Date.now() - failedAt < FETCH_FAILURE_COOLDOWN) {
+            return;
+        }
+        fetchFailures.delete(identity.assetId);
+
+        const segmentedControl = createControl(anchor, client, identity, currentAiState(identity.tags || []));
 
         try {
             const asset = await fetchAsset(identity);
@@ -458,13 +652,19 @@
                 updateSegmentedControl(segmentedControl, currentAiState(asset.tags), identity.readOnly);
             }
         } catch (error) {
+            fetchFailures.set(identity.assetId, Date.now());
             segmentedControl.closest(`#${CONTROL_ID}`)?.remove();
             console.warn(localizedText().unavailable, error);
         }
     }
 
+    // renderControl is triggered from DOM callbacks that cannot await it
+    function renderControlSafely() {
+        renderControl().catch((error) => console.warn('AI classification:', error));
+    }
+
     function observe() {
-        const app = document.querySelector(APP_SELECTOR);
+        const app = findApp();
         if (!app) {
             window.setTimeout(observe, 100);
             return;
@@ -478,7 +678,7 @@
             scheduled = true;
             window.requestAnimationFrame(() => {
                 scheduled = false;
-                renderControl();
+                renderControlSafely();
             });
         };
 
